@@ -28,7 +28,7 @@ class Rae_CF7_Webhooks
         add_action('admin_menu', [$this, 'add_menu']);
         add_action('admin_init', [$this, 'register_settings']);
         add_action('wpcf7_mail_sent', [$this, 'queue_send']);
-        add_action(self::CRON_HOOK, [$this, 'do_send'], 10, 5);
+        add_action(self::CRON_HOOK, [$this, 'do_send'], 10, 6);
         register_deactivation_hook(__FILE__, [__CLASS__, 'deactivate']);
     }
 
@@ -286,7 +286,7 @@ class Rae_CF7_Webhooks
         ];
 
         $form_id = (int) $contact_form->id();
-        foreach ($hooks as $hook) {
+        foreach ($hooks as $i => $hook) {
             if (empty($hook['url'])) {
                 continue;
             }
@@ -298,14 +298,19 @@ class Rae_CF7_Webhooks
             $label  = $hook['label'] ?? '';
             $labels = empty($hook['show_labels']) ? 0 : 1;
             // Hand off to background cron so the visitor's response isn't delayed.
-            wp_schedule_single_event(time(), self::CRON_HOOK, [$type, $hook['url'], $payload, $label, $labels]);
+            // $i is passed so two rows with identical type/url/label/show_labels
+            // produce distinct args — otherwise wp_schedule_single_event drops the
+            // second as a duplicate event due within 10 minutes, and that webhook
+            // never fires.
+            wp_schedule_single_event(time(), self::CRON_HOOK, [$type, $hook['url'], $payload, $label, $labels, $i]);
         }
     }
 
     /* --- Background worker: format by type, blocking POST + log result --- */
 
-    public function do_send($type, $url, $payload, $label = '', $show_labels = 1)
+    public function do_send($type, $url, $payload, $label = '', $show_labels = 1, $row = 0)
     {
+        // $row only disambiguates the cron args (see queue_send); unused here.
         if ($type === 'slack') {
             $body = wp_json_encode(['text' => $this->slack_text($payload, $show_labels)]);
         } else {
