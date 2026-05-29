@@ -28,7 +28,7 @@ class Rae_CF7_Webhooks
         add_action('admin_menu', [$this, 'add_menu']);
         add_action('admin_init', [$this, 'register_settings']);
         add_action('wpcf7_mail_sent', [$this, 'queue_send']);
-        add_action(self::CRON_HOOK, [$this, 'do_send'], 10, 4);
+        add_action(self::CRON_HOOK, [$this, 'do_send'], 10, 5);
         register_deactivation_hook(__FILE__, [__CLASS__, 'deactivate']);
     }
 
@@ -80,10 +80,11 @@ class Rae_CF7_Webhooks
             }
             $type = (isset($row['type']) && $row['type'] === 'slack') ? 'slack' : 'zapier';
             $out[] = [
-                'type'    => $type,
-                'url'     => $url,
-                'form_id' => isset($row['form_id']) ? absint($row['form_id']) : 0,
-                'label'   => isset($row['label']) ? sanitize_text_field($row['label']) : '',
+                'type'        => $type,
+                'url'         => $url,
+                'form_id'     => isset($row['form_id']) ? absint($row['form_id']) : 0,
+                'label'       => isset($row['label']) ? sanitize_text_field($row['label']) : '',
+                'show_labels' => empty($row['show_labels']) ? 0 : 1,
             ];
         }
         return array_values($out);
@@ -199,11 +200,12 @@ class Rae_CF7_Webhooks
 
     private function row_html($i, $row, $forms)
     {
-        $name = self::OPT_HOOKS . '[' . $i . ']';
-        $type = $row['type'] ?? 'zapier';
-        $url  = $row['url'] ?? '';
-        $fid  = (int) ($row['form_id'] ?? 0);
-        $lbl  = $row['label'] ?? '';
+        $name   = self::OPT_HOOKS . '[' . $i . ']';
+        $type   = $row['type'] ?? 'zapier';
+        $url    = $row['url'] ?? '';
+        $fid    = (int) ($row['form_id'] ?? 0);
+        $lbl    = $row['label'] ?? '';
+        $labels = !isset($row['show_labels']) || !empty($row['show_labels']); // default on
         ob_start();
 ?>
         <tr>
@@ -231,6 +233,11 @@ class Rae_CF7_Webhooks
             <td>
                 <input name="<?php echo esc_attr($name); ?>[label]" type="text" class="regular-text"
                     value="<?php echo esc_attr($lbl); ?>" placeholder="optional">
+                <label style="display:block;margin-top:4px;font-size:12px;">
+                    <input name="<?php echo esc_attr($name); ?>[show_labels]" type="checkbox"
+                        value="1" <?php checked($labels); ?>>
+                    Show field names <span style="color:#888;">(Slack)</span>
+                </label>
             </td>
             <td><button type="button" class="button-link rae-remove-hook" title="Remove">&times;</button></td>
         </tr>
@@ -287,19 +294,20 @@ class Rae_CF7_Webhooks
             if ($limit && $limit !== $form_id) {
                 continue;
             }
-            $type  = ($hook['type'] ?? 'zapier') === 'slack' ? 'slack' : 'zapier';
-            $label = $hook['label'] ?? '';
+            $type   = ($hook['type'] ?? 'zapier') === 'slack' ? 'slack' : 'zapier';
+            $label  = $hook['label'] ?? '';
+            $labels = empty($hook['show_labels']) ? 0 : 1;
             // Hand off to background cron so the visitor's response isn't delayed.
-            wp_schedule_single_event(time(), self::CRON_HOOK, [$type, $hook['url'], $payload, $label]);
+            wp_schedule_single_event(time(), self::CRON_HOOK, [$type, $hook['url'], $payload, $label, $labels]);
         }
     }
 
     /* --- Background worker: format by type, blocking POST + log result --- */
 
-    public function do_send($type, $url, $payload, $label = '')
+    public function do_send($type, $url, $payload, $label = '', $show_labels = 1)
     {
         if ($type === 'slack') {
-            $body = wp_json_encode(['text' => $this->slack_text($payload)]);
+            $body = wp_json_encode(['text' => $this->slack_text($payload, $show_labels)]);
         } else {
             $body = wp_json_encode($payload);
         }
@@ -329,7 +337,7 @@ class Rae_CF7_Webhooks
         ]);
     }
 
-    private function slack_text($payload)
+    private function slack_text($payload, $show_labels = 1)
     {
         $lines   = [];
         $lines[] = '*New submission: ' . ($payload['form_title'] ?? 'Untitled') . '* (' . ($payload['site'] ?? '') . ')';
@@ -337,7 +345,7 @@ class Rae_CF7_Webhooks
             if (is_array($value)) {
                 $value = implode(', ', $value);
             }
-            $lines[] = $key . ': ' . $value;
+            $lines[] = $show_labels ? $key . ': ' . $value : $value;
         }
         return implode("\n", $lines);
     }
